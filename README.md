@@ -66,3 +66,27 @@ localmysql b
 
 # Stop local MySQL
 localmysql -```
+
+# Troubleshooting
+## listen tcp 0.0.0.0:3306: bind: address already in use
+This means you likely have another copy of MySQL (unrelated to localmysql) running. You can stop it with `sudo service mysql stop`. You can also completely remove the MySQL installation with the instructions below
+
+# How to purge all other MySQL installations
+This is highly recommended to keep your dev environment nice and clean
+```sudo service mysql stop
+sudo killall -KILL mysql mysqld_safe mysqld
+sudo apt-get --yes purge mysql-server mysql-client
+sudo apt-get --yes autoremove --purge
+sudo apt-get autoclean
+sudo deluser --remove-home mysql
+sudo delgroup mysql
+sudo rm -rf /etc/apparmor.d/abstractions/mysql /etc/apparmor.d/cache/usr.sbin.mysqld /etc/mysql /var/lib/mysql
+/var/log/mysql* /var/log/upstart/mysql.log* /var/run/mysqld
+sudo updatedb```
+
+# TODOs
+* allow tool to be installed via apt/brew
+* flesh out documentation and steps for multiple platforms
+* currently, there is a nasty sleep in the startup logic that is required because mysqld starts twice - once with `--initialize`, and once to actually startup the daemon. There doesn't seem to be a good way to differentiate between them, because connections are allowed in both cases, and queries can still run (but get interrupted inbetween). Hopefully there's something better.
+* maybe better error messages for non-existent versions/files/used ports/etc
+* configurability of passwords and other settings
