@@ -1,0 +1,20 @@
+version: '3.3'
+services:
+  mysql:
+    image: ${ECR_URL}/mysql:${MYSQL_VERSION}
+    container_name: localmysql
+    volumes:
+      - ${CONFIG_DIR}:/etc/my.cnf.d/
+    ports:
+      - ${PORT}:3306
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: 1
+
+  # we have two because we can't easily "conditionally mount" the config dir
+  mysql-noconf:
+    image: ${ECR_URL}/mysql:${MYSQL_VERSION}
+    container_name: localmysql
+    ports:
+      - ${PORT}:3306
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: 1

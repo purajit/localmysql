@@ -1,0 +1,176 @@
+#!/bin/bash
+
+MYSQL_VERSION=5.8  # default
+PORT=3306
+SCRIPTPATH="$( cd "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+
+display_help() {
+    echo "Tools to run mysql locally, with password-less root, and connect to it"
+    echo
+    echo "Usage: localmysql [command] [command-specific options]"
+    echo
+    echo "Commands:"
+    echo "    v/versions             get available mysql versions"
+    echo "    +/start [startops]     start localmysql"
+    echo "    -/stop                 stop localmysql"
+    echo "    c/client               start mysql client connected to localmysql"
+    echo "    ts/table-status        shows the number of rows on all non-empty tables"
+    echo "    b/bash                 enter a bash prompt within the localmysql"
+    echo
+    echo "    startopts:             -v <mysql-version>  # default 5.8"
+    echo "                           -c <dir>  # directory with startup *.sql scripts and"
+    echo "                                     # mysql *.cnf options files and .env docker"
+    echo "                                     # env file, which will be preferred over command-line options"
+    echo "                           -f # start a fresh container, deleting all data"
+    echo "                           -p # MySQL host port to use, defaults to 3306"
+    echo
+}
+
+absolutepath () {
+    if [ ! -d "$1" ]; then
+        echo "$1"
+        exit 1
+    fi
+    echo "$( cd "$1" >/dev/null && pwd -P )";
+}
+
+parse_start_args () {
+    while getopts ':c:p:fv' flag; do
+        case "${flag}" in
+            v) MYSQL_VERSION="${OPTARG}" ;;
+            p) PORT="${OPTARG}" ;;
+            c) CONFIG_DIR="$(absolutepath "${OPTARG}")" ;;
+            f) FRESH_CONTAINER=1 ;;
+            *) display_help
+               exit 1 ;;
+        esac
+    done
+}
+
+print_table_status() {
+    table_status_query="SELECT CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS \"table\", TABLE_ROWS AS \"\# rows\"
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE (TABLE_SCHEMA NOT IN ('mysql', 'information_schema', 'performance_schema'))
+            AND TABLE_ROWS > 0;"
+    docker exec -it localmysql mysql -uroot -e "$table_status_query"
+}
+
+stop_localmysql() {
+    # env values don't matter
+    PORT=$PORT CONFIG_DIR= docker-compose -f $SCRIPTPATH/docker-compose.yml down
+}
+
+# 0 - running; 1 - not running
+status_localmysql() {
+    PORT=$PORT CONFIG_DIR= docker-compose -f $SCRIPTPATH/docker-compose.yml ps 2>/dev/null | grep mysql >/dev/null
+    echo "$?"
+}
+
+# wait until mysqld has fully started up
+wait_for_mysqld() {
+    status_container_mysqld() {
+        docker exec -it localmysql mysqladmin -uroot status >/dev/null 2>&1
+        echo "$?"
+    }
+
+    loop_once() {
+        while [ $(status_container_mysqld) -eq 1 ]; do
+            printf "."
+            sleep 1
+        done
+    }
+
+    printf "Waiting for MySQL to start "
+    loop_once
+    sleep 3; loop_once  # required because mysqld runs twice, once to initialize
+    printf "\n"
+}
+
+confirm_running() {
+    if [ $(status_localmysql) -eq 1 ]; then
+        >&2 echo "localmysql not running"
+        exit 1
+    fi
+}
+
+start_localmysql() {
+    # if -f is provided, stop current container and start another
+    if [ -n "${FRESH_CONTAINER+x}" ]; then
+        echo "Recreating ..."
+        stop_localmysql
+        PORT=$PORT CONFIG_DIR= docker-compose -f $SCRIPTPATH/docker-compose.yml rm
+    elif [ $(status_localmysql) -eq 0 ]; then
+        >&2 echo "localmysql already running"
+        exit 1
+    fi
+
+    service=mysql
+    use_env_file=false
+    if [ ! -n "$CONFIG_DIR" ]; then
+        echo "No custom config dir provided"
+        service=mysql-noconf
+    elif [ ! -d "$CONFIG_DIR" ]; then
+        >&2 echo "Config directory provided does not exist"
+        exit 1
+    elif [ -f "$CONFIG_DIR/.env" ]; then
+        echo "Using provided env-file in $CONFIG_DIR/.env"
+        use_env_file=true
+    fi
+
+    if [ "$use_env_file"  == "true" ]; then
+        echo "Launching with env file-provided options"
+        CONFIG_DIR=$CONFIG_DIR docker-compose --env-file $CONFIG_DIR/.env -f $SCRIPTPATH/docker-compose.yml up -d $service
+    else
+        echo "Launching with command line-provided options"
+        CONFIG_DIR=$CONFIG_DIR PORT=$PORT MYSQL_VERSION=$MYSQL_VERSION docker-compose -f $SCRIPTPATH/docker-compose.yml up -d $service
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo "Docker container failed to start up"
+        exit 1
+    fi
+
+    wait_for_mysqld
+    if [ -n "$CONFIG_DIR" ]; then
+        echo "Initializing MySQL with $CONFIG_DIR"
+        shopt -s nullglob
+        for sql_file in $CONFIG_DIR/*.sql; do
+            sql_file_name=$(basename $sql_file)
+            echo "  ... $sql_file_name"
+            docker exec -it localmysql bash -c "mysql -uroot < /etc/my.cnf.d/$sql_file_name"
+        done
+        shopt -u nullglob
+    fi
+    echo "localmysql is ready"
+}
+
+COMMAND=$1
+shift
+
+case $COMMAND in
+    v | versions)
+        # [TODO] list images, remove jq requirement
+        ;;
+    ts | table-status)
+        confirm_running
+        print_table_status
+        ;;
+    b | bash)
+        docker exec -it localmysql bash
+        ;;
+    + | start)
+        parse_start_args $@
+        start_localmysql
+        ;;
+    - | stop)
+        confirm_running
+        stop_localmysql
+        ;;
+    c | client)
+        confirm_running
+        docker exec -it localmysql mysql -uroot
+        ;;
+    *)
+        display_help
+        ;;
+esac
